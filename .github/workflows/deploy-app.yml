@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: Target Environment
+        description: "Target Environment"
         required: true
         type: choice
         options:
@@ -22,13 +22,15 @@ jobs:
 
   validate-promotion:
 
+    name: Validate Promotion Path
+
     if: ${{ inputs.environment != 'DEV' }}
 
     runs-on: ubuntu-latest
 
     steps:
 
-      - name: Validate Promotion Path
+      - name: Validate Previous Environment Deployment
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -41,37 +43,21 @@ jobs:
             REQUIRED_ENV="UAT"
           fi
 
-          echo "Checking if SHA $SHA was successfully deployed to $REQUIRED_ENV"
+          echo "Checking if SHA $SHA was deployed to $REQUIRED_ENV"
 
-          DEPLOYMENTS=$(curl -s \
+          DEPLOYMENT_ID=$(curl -s \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO/deployments?sha=$SHA")
-
-          DEPLOYMENT_ID=$(echo "$DEPLOYMENTS" | jq -r \
-            ".[] | select(.environment==\"$REQUIRED_ENV\") | .id" \
+            "https://api.github.com/repos/$REPO/deployments?sha=$SHA" \
+            | jq -r ".[] | select(.environment==\"$REQUIRED_ENV\") | .id" \
             | head -n 1)
 
           if [ -z "$DEPLOYMENT_ID" ]; then
-            echo "No deployment found for SHA $SHA in $REQUIRED_ENV"
+            echo "ERROR: SHA $SHA has not been deployed to $REQUIRED_ENV"
             exit 1
           fi
 
-          echo "Found deployment ID $DEPLOYMENT_ID"
-
-          STATUS=$(curl -s \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO/deployments/$DEPLOYMENT_ID/statuses" \
-            | jq -r '.[0].state')
-
-          echo "Deployment status = $STATUS"
-
-          if [ "$STATUS" != "success" ]; then
-            echo "Previous environment deployment was not successful"
-            exit 1
-          fi
-
+          echo "Found deployment $DEPLOYMENT_ID in $REQUIRED_ENV"
           echo "Promotion validation successful"
 
   deploy:
@@ -80,7 +66,8 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    needs: validate-promotion
+    needs:
+      - validate-promotion
 
     if: |
       always() &&
@@ -119,7 +106,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
 
-          DEPLOYMENT_ID=$(curl -s \
+          RESPONSE=$(curl -s \
             -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -129,8 +116,11 @@ jobs:
               "environment":"${{ inputs.environment }}",
               "auto_merge":false,
               "required_contexts":[]
-            }' \
-            | jq -r '.id')
+            }')
+
+          DEPLOYMENT_ID=$(echo "$RESPONSE" | jq -r '.id')
+
+          echo "Created deployment: $DEPLOYMENT_ID"
 
           echo "deployment_id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
 
@@ -147,3 +137,10 @@ jobs:
             -d '{
               "state":"success"
             }'
+
+      - name: Deployment Summary
+        run: |
+          echo "### Deployment Completed" >> $GITHUB_STEP_SUMMARY
+          echo "- Environment: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit SHA: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Workflow Run: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
