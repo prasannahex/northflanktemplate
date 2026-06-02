@@ -1,5 +1,7 @@
 name: Terraform Deploy
 
+run-name: Infrastructure Deploy - ${{ inputs.environment }}
+
 on:
   workflow_dispatch:
     inputs:
