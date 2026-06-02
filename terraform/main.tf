@@ -22,7 +22,7 @@ resource "azurerm_service_plan" "plan" {
   resource_group_name = azurerm_resource_group.rg.name
 
   os_type  = "Linux"
-  sku_name = "B1"
+  sku_name = "F1"
 }
 
 resource "azurerm_linux_web_app" "webapp" {
@@ -36,6 +36,7 @@ resource "azurerm_linux_web_app" "webapp" {
   https_only = true
 
   site_config {
+    always_on = false
 
     application_stack {
       python_version = "3.11"
