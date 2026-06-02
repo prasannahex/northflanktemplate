@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Target Environment"
+        description: Target Environment
         required: true
         type: choice
         options:
@@ -16,14 +16,78 @@ on:
 
 permissions:
   contents: read
+  deployments: write
 
 jobs:
+
+  validate-promotion:
+
+    if: ${{ inputs.environment != 'DEV' }}
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Validate Promotion Path
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+
+          if [ "${{ inputs.environment }}" = "UAT" ]; then
+            REQUIRED_ENV="DEV"
+          else
+            REQUIRED_ENV="UAT"
+          fi
+
+          echo "Checking if SHA $SHA was successfully deployed to $REQUIRED_ENV"
+
+          DEPLOYMENTS=$(curl -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/deployments?sha=$SHA")
+
+          DEPLOYMENT_ID=$(echo "$DEPLOYMENTS" | jq -r \
+            ".[] | select(.environment==\"$REQUIRED_ENV\") | .id" \
+            | head -n 1)
+
+          if [ -z "$DEPLOYMENT_ID" ]; then
+            echo "No deployment found for SHA $SHA in $REQUIRED_ENV"
+            exit 1
+          fi
+
+          echo "Found deployment ID $DEPLOYMENT_ID"
+
+          STATUS=$(curl -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/deployments/$DEPLOYMENT_ID/statuses" \
+            | jq -r '.[0].state')
+
+          echo "Deployment status = $STATUS"
+
+          if [ "$STATUS" != "success" ]; then
+            echo "Previous environment deployment was not successful"
+            exit 1
+          fi
+
+          echo "Promotion validation successful"
 
   deploy:
 
     name: Deploy Application to ${{ inputs.environment }}
 
     runs-on: ubuntu-latest
+
+    needs: validate-promotion
+
+    if: |
+      always() &&
+      (
+        inputs.environment == 'DEV' ||
+        needs.validate-promotion.result == 'success'
+      )
 
     environment: ${{ inputs.environment }}
 
@@ -48,3 +112,38 @@ jobs:
         with:
           app-name: ${{ vars.WEBAPP_NAME }}
           package: ./app
+
+      - name: Create GitHub Deployment Record
+        id: deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+
+          DEPLOYMENT_ID=$(curl -s \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/deployments \
+            -d '{
+              "ref":"${{ github.sha }}",
+              "environment":"${{ inputs.environment }}",
+              "auto_merge":false,
+              "required_contexts":[]
+            }' \
+            | jq -r '.id')
+
+          echo "deployment_id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
+
+      - name: Mark Deployment Success
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+
+          curl -s \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/deployments/${{ steps.deployment.outputs.deployment_id }}/statuses \
+            -d '{
+              "state":"success"
+            }'
